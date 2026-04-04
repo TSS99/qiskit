@@ -25,25 +25,36 @@ POW_LIST = np.pi ** np.arange(2, 5)
 
 
 def pi_check(inpt, eps=1e-9, output="text", ndigits=None):
-    """Computes if a number is close to an integer
-    fraction or multiple of PI and returns the
-    corresponding string.
+    """Format a value using simple multiples and fractions of pi when possible.
+
+    The return value is always a string.  Real and complex numbers are rewritten using a compact
+    pi-based representation when they are within ``eps`` of a supported form.  This currently
+    includes:
+
+    * integer multiples of pi, such as ``pi`` and ``-3*pi``,
+    * powers of pi greater than ``pi``, such as ``pi**2``,
+    * fractions with pi in the numerator, such as ``pi/35`` and ``6*pi/11``,
+    * fractions with pi in the denominator, such as ``1/pi`` and ``6/(5*pi)``.
+
+    Values that do not match one of the supported forms are formatted as ordinary numeric strings.
+    If ``inpt`` is a :class:`.ParameterExpression`, the numeric coefficients in its string form are
+    rewritten using the same rules.  If ``inpt`` is already a string, it is returned unchanged.
 
     Args:
-        inpt (float): Number to check.
-        eps (float): EPS to check against.
-        output (str): Options are 'text' (default),
-                      'latex', 'mpl', and 'qasm'.
-        ndigits (int or None): Number of digits to print
-                               if returning raw inpt.
-                               If `None` (default), Python's
-                               default float formatting is used.
+        inpt (float | complex | str | ParameterExpression): Value to format.
+        eps (float): Numerical tolerance used to decide whether a value is close enough to one of
+            the supported pi-based forms.
+        output (str): Output style.  Supported options are ``"text"`` (default), ``"latex"``,
+            ``"mpl"``, and ``"qasm"``.
+        ndigits (int or None): Number of significant digits to use when falling back to ordinary
+            numeric formatting.  If ``None`` (the default), Python's default float formatting is
+            used.
 
     Returns:
-        str: string representation of output.
+        str: Formatted string representation of ``inpt``.
 
     Raises:
-        QiskitError: if output is not a valid option.
+        QiskitError: If ``output`` is not one of the supported styles.
     """
     if isinstance(inpt, ParameterExpression):
         param_str = str(inpt)

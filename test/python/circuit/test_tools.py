@@ -19,6 +19,7 @@ from numpy import pi
 
 from qiskit.circuit.tools.pi_check import pi_check
 from qiskit.circuit import Parameter
+from qiskit.exceptions import QiskitError
 from test import QiskitTestCase
 
 
@@ -94,6 +95,21 @@ class TestPiCheck(QiskitTestCase):
         expected_string = "π/2 + x"
         result = pi_check(input_number)
         self.assertEqual(result, expected_string)
+
+    def test_output_modes(self):
+        """Test alternate output modes."""
+        self.assertEqual(pi_check(pi / 2, output="latex"), "\\frac{\\pi}{2}")
+        self.assertEqual(pi_check(pi, output="mpl"), "$\\pi$")
+        self.assertEqual(pi_check(2 * pi, output="qasm"), "2*pi")
+
+    def test_string_input_passthrough(self):
+        """String inputs should be returned unchanged."""
+        self.assertEqual(pi_check("already formatted"), "already formatted")
+
+    def test_invalid_output_mode(self):
+        """Invalid output modes raise a helpful error."""
+        with self.assertRaises(QiskitError):
+            pi_check(pi, output="bad-output")
 
 
 if __name__ == "__main__":
