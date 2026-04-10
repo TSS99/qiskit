@@ -69,7 +69,7 @@ class _MeasureInfo:
     start: int
 
 
-ResultMemory = list[str] | list[list[float]] | list[list[list[float]]]
+ResultMemory = list[str | int] | list[list[float]] | list[list[list[float]]]
 """Type alias for possible level 2 and level 1 result memory formats. For level
 2, the format is a list of bit strings. For level 1, format can be either a
 list of I/Q pairs (list with two floats) for each memory slot if using
@@ -113,7 +113,10 @@ class BackendSamplerV2(BaseSamplerV2):
 
     .. note::
 
-        This class requires a backend that supports ``memory`` option.
+        This adapter requires a backend that returns the standard Qiskit
+        :class:`~qiskit.result.Result` payload with either level-2 ``memory``
+        samples or ``counts`` data. When counts are expanded into samples, the
+        sample ordering is deterministic but has no backend-defined meaning.
 
     """
 
@@ -185,15 +188,21 @@ class BackendSamplerV2(BaseSamplerV2):
         for circuits in bound_circuits:
             flatten_circuits.extend(np.ravel(circuits).tolist())
 
-        run_opts = self._options.run_options or {}
+        run_opts = dict(self._options.run_options or {})
+        run_opts["shots"] = shots
+        if "memory" not in run_opts and _supports_backend_run_option(self._backend, "memory"):
+            run_opts["memory"] = True
+        if (
+            self._options.seed_simulator is not None
+            and "seed_simulator" not in run_opts
+            and _supports_backend_run_option(self._backend, "seed_simulator")
+        ):
+            run_opts["seed_simulator"] = self._options.seed_simulator
         # run circuits
         results, _ = _run_circuits(
             flatten_circuits,
             self._backend,
             clear_metadata=False,
-            memory=True,
-            shots=shots,
-            seed_simulator=self._options.seed_simulator,
             **run_opts,
         )
         result_memory = _prepare_memory(results)
@@ -299,22 +308,59 @@ def _prepare_memory(results: list[Result]) -> list[ResultMemory]:
         for exp in res.results:
             if hasattr(exp.data, "memory") and exp.data.memory:
                 lst.append(exp.data.memory)
+            elif hasattr(exp.data, "counts") and exp.data.counts:
+                lst.append(_counts_to_memory(exp.data.counts))
             else:
                 # no measure in a circuit
                 lst.append(["0x0"] * exp.shots)
     return lst
 
 
-def _memory_array(results: list[list[str]], num_bytes: int) -> NDArray[np.uint8]:
+def _supports_backend_run_option(backend: BackendV2, option: str) -> bool:
+    """Return whether a backend exposes a run option through ``backend.options``."""
+    return option in backend.options
+
+
+def _counts_to_memory(counts: dict[str | int, int]) -> list[str | int]:
+    """Expand counts data into a deterministic list of samples."""
+    return [outcome for outcome, count in counts.items() for _ in range(count)]
+
+
+def _memory_value_to_int(value: str | int) -> int:
+    """Parse a backend memory datum into an integer."""
+    if isinstance(value, int):
+        return value
+    formatted = value.strip().replace(" ", "").replace("_", "")
+    if not formatted:
+        return 0
+    if formatted.startswith(("0x", "0X", "0b", "0B")):
+        return int(formatted, 0)
+    if set(formatted) <= {"0", "1"}:
+        return int(formatted, 2)
+    if formatted.isdecimal():
+        return int(formatted, 10)
+    return int(formatted, 16)
+
+
+def _memory_array(results: list[list[str | int]], num_bytes: int) -> NDArray[np.uint8]:
     """Converts the memory data into an array in an unpacked way."""
-    lst = []
+    parsed_results = []
+    width = num_bytes
     for memory in results:
-        if num_bytes > 0:
-            data = b"".join(int(i, 16).to_bytes(num_bytes, "big") for i in memory)
-            data = np.frombuffer(data, dtype=np.uint8).reshape(-1, num_bytes)
+        parsed_memory = [_memory_value_to_int(value) for value in memory]
+        parsed_results.append(parsed_memory)
+        for value in parsed_memory:
+            bits = max(1, value.bit_length())
+            width = max(width, (bits + 7) // 8)
+
+    lst = []
+    for memory in parsed_results:
+        if width > 0:
+            data = b"".join(value.to_bytes(width, "big") for value in memory)
+            data = np.frombuffer(data, dtype=np.uint8).reshape(-1, width)
         else:
             # no measure in a circuit
-            data = np.zeros((len(memory), num_bytes), dtype=np.uint8)
+            data = np.zeros((len(memory), width), dtype=np.uint8)
         lst.append(data)
     ary = np.asarray(lst)
     return np.unpackbits(ary, axis=-1, bitorder="big")

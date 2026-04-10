@@ -30,8 +30,10 @@ from qiskit.primitives.containers import BitArray
 from qiskit.primitives.containers.data_bin import DataBin
 from qiskit.primitives.containers.sampler_pub import SamplerPub
 from qiskit.providers import JobStatus
+from qiskit.providers.backend import BackendV2
 from qiskit.providers.basic_provider import BasicProviderJob, BasicSimulator
 from qiskit.providers.fake_provider import GenericBackendV2
+from qiskit.providers.options import Options
 from qiskit.result import Result
 from qiskit.result.models import MeasReturnType, MeasLevel
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
@@ -103,6 +105,62 @@ class Level1BackendV2(GenericBackendV2):
             exp_result["data"] = {"memory": new_data}
             exp_result["meas_level"] = MeasLevel.KERNELED
 
+        result = Result.from_dict(result_dict)
+        return BasicProviderJob(self, inner_job.job_id(), result)
+
+
+class CountsOnlyBackendV2(BackendV2):
+    """BackendV2 wrapper that only returns counts data and rejects unsupported options."""
+
+    def __init__(self):
+        super().__init__(
+            name="counts_only_backend",
+            description="Basic simulator wrapper exposing counts-only results.",
+            backend_version="1.0",
+        )
+        self._sim = BasicSimulator()
+        self._target = self._sim.target
+
+    @property
+    def target(self):
+        return self._target
+
+    @property
+    def max_circuits(self):
+        return None
+
+    @classmethod
+    def _default_options(cls) -> Options:
+        return Options(shots=1024)
+
+    def run(self, run_input, **options):
+        unsupported = {"memory", "seed_simulator"} & options.keys()
+        if unsupported:
+            raise ValueError(f"Unsupported run options received: {unsupported}")
+
+        shots = options.get("shots", self.options.shots)
+        inner_job = self._sim.run(run_input, shots=shots, memory=False)
+        result_dict = inner_job.result().to_dict()
+        for exp_result in result_dict["results"]:
+            exp_result["data"].pop("memory", None)
+        result = Result.from_dict(result_dict)
+        return BasicProviderJob(self, inner_job.job_id(), result)
+
+
+class BinaryMemoryBackendV2(BasicSimulator):
+    """Basic simulator wrapper that returns plain bitstrings instead of hex memory."""
+
+    def run(self, run_input, **options):
+        inner_job = super().run(run_input, **options)
+        circuits = run_input if isinstance(run_input, list) else [run_input]
+        result_dict = inner_job.result().to_dict()
+        for circuit, exp_result in zip(circuits, result_dict["results"]):
+            num_clbits = circuit.num_clbits
+            if num_clbits == 0:
+                continue
+            exp_result["data"]["memory"] = [
+                format(int(value, 16), f"0{num_clbits}b") for value in exp_result["data"]["memory"]
+            ]
         result = Result.from_dict(result_dict)
         return BasicProviderJob(self, inner_job.job_id(), result)
 
@@ -589,6 +647,30 @@ class TestBackendSamplerV2(QiskitTestCase):
             max(abs(expected_average - average_data)),
             backend.level1_sigma / np.sqrt(shots) * 6,
         )
+
+    def test_run_with_counts_only_backend(self):
+        """Test counts fallback for backends without ``memory`` or ``seed_simulator`` options."""
+        qc = QuantumCircuit(1)
+        qc.x(0)
+        qc.measure_all()
+
+        sampler = BackendSamplerV2(backend=CountsOnlyBackendV2(), options=self._options)
+        result = sampler.run([qc], shots=self._shots).result()
+
+        self.assertEqual(len(result), 1)
+        self._assert_allclose(result[0].data.meas, np.array({1: self._shots}))
+
+    def test_run_with_binary_memory_backend(self):
+        """Test parsing level-2 memory returned as plain bitstrings."""
+        qc = QuantumCircuit(2)
+        qc.x(1)
+        qc.measure_all()
+
+        sampler = BackendSamplerV2(backend=BinaryMemoryBackendV2(), options=self._options)
+        result = sampler.run([qc], shots=self._shots).result()
+
+        self.assertEqual(len(result), 1)
+        self._assert_allclose(result[0].data.meas, np.array({2: self._shots}))
 
     @combine(backend=BACKENDS)
     def test_primitive_job_status_done(self, backend):
